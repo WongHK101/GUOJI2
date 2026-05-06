@@ -7,3 +7,6 @@ result/
 data/
 AGENTS.md
 WORKLOG.md
+data/
+result/
+__pycache__/
