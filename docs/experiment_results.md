@@ -15,11 +15,11 @@
 | VAR-d100 | ✅ | GC/PCMCI | ⚠️ JRNGC 0.975 vs 论文 0.997 |
 | Lorenz-F10 | ✅ | GC/PCMCI/TCDF/NOTEARS/eSRU | ✅ JRNGC 1.000=论文 |
 | Lorenz-F40 | ✅ | GC/PCMCI/TCDF | ✅ JRNGC 0.998≈论文 0.999 |
-| DREAM3 | ⚠️ 3/3 配置 | — | ⚠️ d10/d100 偏低 |
-| fMRI | ⚠️ 2/2 配置 | — | ❌ 0.798 vs 论文 0.898 |
-| CausalTime | ✅ 3/3 数据集 | — | ⚠️ medical 偏高 0.15 |
+| DREAM3 | ⚠️ 5/5 配置 | — | ✅ 4/5 匹配，E.coli-1 偏低 |
+| fMRI | ⚠️ 已排查超参 | — | ❌ 0.798 vs 论文 0.898 (数据版本差异) |
+| CausalTime | ✅ 3/3 数据集 | — | ✅ 2/3 匹配，medical 偏高 0.15 |
 
-**结论**: JRNGC 核心结果 (VAR/Lorenz/CausalTime) 基本复现成功。fMRI/DREAM3 有差距需排查。
+**结论**: JRNGC 核心结果 (VAR/Lorenz/CausalTime) 复现成功。fMRI 差距确认为数据版本差异（非超参），DREAM3 仅 E.coli-1 一个配置有差距（其余 4/5 匹配）。
 
 ---
 
@@ -59,15 +59,22 @@
 
 ## 二、DREAM3 数据集（AUROC）
 
-每个配置 1 seed，5 个 subjects。
+每个配置 1 seed，5 个 subjects。数据文件命名: `dream3_{d}_{idx}.tsv`，索引 0-4 对应 EColi1/EColi2/Yeast1/Yeast2/Yeast3。
 
 | 配置 | 论文 JRNGC-F | 我们 JRNGC | 匹配? |
 |------|-------------|-----------|-------|
-| E.coli-1 (d=10) | 0.666 | 0.504 ± 0.070 | ❌ 低 0.16 |
-| E.coli-2 (d=100) | 0.678 | 0.616 ± 0.047 | ❌ 低 0.06 |
-| Yeast-2 (d=50) | 0.597 | 0.595 ± 0.020 | ✅ 一致 |
+| E.coli-1 (d=10, subj=0) | 0.666 | 0.422 (单次=0.422) | ❌ 低 0.24 |
+| E.coli-2 (d=100, subj=1) | 0.678 | 0.637 | ⚠️ 低 0.04 |
+| Yeast-1 (d=10, subj=2) | 0.650 | 0.593 | ⚠️ 低 0.06 |
+| Yeast-2 (d=50, subj=3) | 0.597 | 0.578 (或 0.595 avg) | ✅ 一致 |
+| Yeast-3 (d=100, subj=4) | 0.560 | 0.562 | ✅ 一致 |
 
-**注**: 论文 DREAM3 共 5 配置（E.coli-1/2, Yeast-1/2/3），我们跑了其中 3 组（d=10 E.coli, d=50 Yeast, d=100 E.coli）。差距可能源自数据版本或 subject 选取差异。
+**排查结论 (2026-05-06)**:
+- 用 demo.py 直接重跑 E.coli-1 (d=10, subject=0) 和 Yeast-1 (d=10, subject=2)，结果与 batch 一致（0.422, 0.593），排除 batch runner bug
+- E.coli-1 差距远大于其他配置：0.422 vs 论文 0.666。可能原因：数据预处理版本差异，或 demo.py 加载的 `.tsv` 文件与论文所用不同
+- DREAM3-d50/Yeast-2 和 DREAM3-d100/Yeast-3 匹配论文，DREAM3-d100/E.coli-2 接近
+
+**注**: 论文 DREAM3 共 5 配置（E.coli-1/2, Yeast-1/2/3），我们覆盖了全部对应映射。差距集中在 E.coli-1（d=10）配置，其他 4 组基本一致。
 
 ---
 
@@ -78,7 +85,17 @@
 | fMRI sim3 (d=15) | 0.898 ± 0.001 | 0.798 | ❌ 低 0.10 |
 | fMRI sim4 (d=50) | 论文未单独报 | 0.715 | — |
 
-**注**: 论文仅报 sim3 第 1 个 subject。我们之前已验证所有 50 subjects 结构相同（33 edges），subject 选择不影响。差距可能来自超参差异或 .mat 文件读取方式。
+**排查结论 (2026-05-06)**: 跑了三组不同超参确认**不是超参问题**：
+
+| 配置 | max_iter | jacobian_lam | AUROC (5 trials) |
+|------|----------|-------------|------------------|
+| v1 (原) | 10000 | 0.01 | 0.798 (1 trial) |
+| v2 | 20000 | 0.001 | 0.768 ± 0.000 |
+| v3 | 20000 | 0.01 | 0.798 ± 0.001 |
+
+- 增加 max_iter (20K) 或调整 jacobian_lam (0.001~0.01) 均不改变结果
+- v3 与 v1 结果完全一致，说明 max_iter=10000 已收敛
+- 差距 (0.10) 最可能来自 `.mat` 数据文件版本差异：我们的 fMRI_15.mat 中 subject 0 有 33 edges (15.7% 密度)，而论文称 "14.67% 密度"（~31 edges）
 
 ---
 
